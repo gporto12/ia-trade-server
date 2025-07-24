@@ -1,56 +1,93 @@
-# Importa o Flask e o objeto 'request' para lidar com as requisições web
+# Importa as bibliotecas necessárias
 from flask import Flask, request, jsonify
-import json # Importa a biblioteca para lidar com JSON
-import datetime # Importa a biblioteca para lidar com datas e horas
+import json
+import datetime
+import os
+import google.generativeai as genai
 
 # Cria uma instância do nosso aplicativo web
 app = Flask(__name__)
 
-# Define a rota (o URL específico) que vai receber os alertas.
-# O TradingView vai enviar os dados para 'seusite.com/webhook'
-# O 'methods=['POST']' significa que esta rota só aceita dados enviados para ela.
+# --- CONFIGURAÇÃO DA IA (GEMINI) ---
+# Pega a chave de API das variáveis de ambiente do servidor (mais seguro)
+# Teremos que configurar isso no Render
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
+# ------------------------------------
+
+def analisar_com_ia(strategy, ticker, price, timeframe):
+    """
+    Esta função envia os dados do sinal para a IA Gemini e pede uma análise.
+    """
+    try:
+        print("🤖 Enviando dados para análise da IA...")
+
+        # Monta a pergunta (prompt) para a IA.
+        # Este é o "cérebro" da nossa validação. Podemos refinar este prompt no futuro.
+        prompt = f"""
+        Análise de Oportunidade de Trade:
+        - Estratégia Identificada: {strategy}
+        - Ativo: {ticker}
+        - Preço de Sinal: {price}
+        - Timeframe: {timeframe}
+
+        Você é um analista de mercado experiente. Com base nesta informação e no seu conhecimento do contexto atual do mercado para este ativo, 
+        avalie a qualidade desta entrada. Considere a força do movimento, possíveis zonas de suporte/resistência próximas e o sentimento geral.
+
+        Responda em DUAS PARTES OBRIGATÓRIAS:
+        1.  **Análise:** Um parágrafo curto (máximo de 3 frases) com sua opinião técnica.
+        2.  **Confiança:** Uma nota de 0 a 10 sobre a sua confiança nesta operação.
+        """
+
+        # Envia o prompt para o modelo Gemini
+        response = model.generate_content(prompt)
+        
+        print("✅ Análise da IA recebida!")
+        return response.text
+
+    except Exception as e:
+        print(f"❌ ERRO na comunicação com a IA: {e}")
+        return "Erro ao analisar com a IA."
+
+
 @app.route('/webhook', methods=['POST'])
 def tradingview_webhook():
     """
-    Esta função é acionada toda vez que o TradingView envia um alerta para o nosso URL.
+    Esta função é acionada toda vez que o TradingView envia um alerta.
     """
     print("------------------------------------------")
     print(f"Alerta recebido em: {datetime.datetime.now()}")
 
     try:
-        # Pega os dados que o TradingView enviou (o JSON da nossa mensagem de alerta)
         data = request.get_json()
         print(f"Dados brutos recebidos: {json.dumps(data, indent=2)}")
 
-        # Extrai as informações importantes do JSON
         strategy = data.get('strategy', 'N/A')
         ticker = data.get('ticker', 'N/A')
         price = data.get('price', 'N/A')
         timeframe = data.get('timeframe', 'N/A')
 
-        # Imprime uma mensagem formatada no console (nos Logs do servidor) para sabermos que funcionou
-        print(f"✅ SINAL RECEBIDO:")
-        print(f"   - Estratégia: {strategy}")
-        print(f"   - Ativo: {ticker}")
-        print(f"   - Preço: {price}")
-        print(f"   - Timeframe: {timeframe}")
-        print("------------------------------------------\n")
+        print(f"✅ SINAL RECEBIDO: {strategy} em {ticker}")
 
+        # **NOVA ETAPA: Chamar a função de análise da IA**
+        analise_ia = analisar_com_ia(strategy, ticker, price, timeframe)
+        
+        # Imprime o resultado da análise nos logs
+        print("\n--- ANÁLISE DA IA ---")
+        print(analise_ia)
+        print("---------------------\n")
+        
         # **PRÓXIMO PASSO SERÁ AQUI:**
-        # Neste ponto, no futuro, nós vamos chamar a função que fala com a IA
-        # ex: ia_analysis_result = analisar_com_ia(strategy, ticker, price)
+        # Com a 'analise_ia' em mãos, vamos chamar a função que envia a notificação via Firebase.
+        # ex: enviar_notificacao(analise_ia)
 
-        # Retorna uma resposta de sucesso para o TradingView saber que recebemos o alerta.
-        return jsonify(status="sucesso", mensagem="Alerta recebido"), 200
+        return jsonify(status="sucesso", mensagem="Alerta recebido e analisado pela IA"), 200
 
     except Exception as e:
-        # Se algo der errado (ex: os dados não são JSON), imprime o erro
         print(f"❌ ERRO ao processar o alerta: {e}")
-        # Retorna uma resposta de erro
         return jsonify(status="erro", mensagem=str(e)), 400
 
-# Esta parte permite que o servidor seja iniciado quando executamos o arquivo
+# Esta parte não muda
 if __name__ == '__main__':
-    # O host '0.0.0.0' é necessário para que o serviço funcione na nuvem
-    # A porta é definida pelo serviço de hospedagem (ex: Render)
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
